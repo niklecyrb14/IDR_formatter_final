@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip show:*)",
+      "Bash(cd \"/c/Users/belkin/OneDrive - AP Gas and Electric Texas/Documents/PROJECTS/IDR_formatter_final\" && PYTHONIOENCODING=utf-8 python \"IDR File Formatter.py\" \"08010376321830000348 \\(2\\).xlsx\" 2>&1)",
+      "Bash(cd \"/c/Users/belkin/OneDrive - AP Gas and Electric Texas/Documents/PROJECTS/IDR_formatter_final\" && echo \"\" | \"./dist/IDR File Formatter.exe\" \"08010376321830000348 \\(2\\).xlsx\" 2>&1)",
+      "Bash(cd \"/c/Users/belkin/OneDrive - AP Gas and Electric Texas/Documents/PROJECTS/IDR_formatter_final\" && PYTHONIOENCODING=utf-8 echo \"\" | \"./dist/IDR File Formatter.exe\" \"08010376321830000348 \\(2\\).xlsx\" 2>&1)",
+      "Bash(cd \"/c/Users/belkin/OneDrive - AP Gas and Electric Texas/Documents/PROJECTS/IDR_formatter_final\" && echo \"\" | \"./dist/IDR File Formatter.exe\" \"08040644111110001294.xlsx\" 2>&1)"
+    ]
+  }
+}
