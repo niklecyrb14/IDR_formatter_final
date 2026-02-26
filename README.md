@@ -1,0 +1,1 @@
+this formatter formats electricity usage IDR data for many of the LDCs in PJM. it takes many different file formats and turns them into a 2 column strip of hourly data that is more easily digestible for analysis.
