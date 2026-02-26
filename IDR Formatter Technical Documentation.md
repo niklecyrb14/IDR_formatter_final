@@ -4,7 +4,7 @@
 
 The IDR Formatter is a Python-based command-line application that processes interval energy usage data from multiple utility formats and converts it into a standardized hourly output format.
 
-**Version:** 1.0.1  
+**Version:** 1.1.0
 **Author:** AP Gas & Electric Texas  
 **Language:** Python 3.x
 
@@ -81,14 +81,18 @@ IDR File Formatter.py
 │
 ├── FORMAT DETECTION FUNCTIONS
 │   ├── is_comed_format()
+│   ├── is_duq_format()
 │   ├── is_first_energy_format()
+│   ├── is_esg_multi_meter_format()
 │   ├── is_esg_format()
 │   ├── is_bge_format()
 │   └── (PSEG is default fallback)
 │
 ├── FORMAT READER FUNCTIONS
 │   ├── read_comed_format()
+│   ├── read_duq_format()
 │   ├── read_first_energy_format()
+│   ├── read_esg_multi_meter_format()
 │   ├── read_esg_format()
 │   └── read_bge_format()
 │
@@ -162,8 +166,8 @@ df = pd.read_csv(input_file, skiprows=3, usecols=[0, 1], names=['datetime', 'usa
 - `Reading Date` - Header row for interval data
 
 ### 5. COMED Format
-**Detection:** Contains "INTERVAL USAGE DATA" header and `KW_INTERVAL_*` columns  
-**Structure:** Wide format with date rows, multiple meters to combine  
+**Detection:** Contains "INTERVAL USAGE DATA" header and `KW_INTERVAL_*` columns
+**Structure:** Wide format with date rows, multiple meters to combine
 **Special handling:**
 - Sums usage across all meters for same date/interval
 - Supports 48 intervals (30-min) or 96 intervals (15-min)
@@ -173,13 +177,33 @@ df = pd.read_csv(input_file, skiprows=3, usecols=[0, 1], names=['datetime', 'usa
 - Interval 1 = 12:00-12:30 AM
 - Interval 48 = 11:30 PM-12:00 AM
 
+### 6. DUQ Format (Duquesne Light)
+**Detection:** Contains "Customer Identity" and "Detailed Interval Usage" in first 3KB of file
+**Structure:** Header metadata section, monthly summary section (skipped), then hourly interval data
+**Special handling:**
+- Data is already hourly (24 columns per day), no resampling needed
+- Columns 1-24 represent hours ending 1:00-24:00 (mapped to 00:00-23:00)
+- Interleaved QTY columns and trailing Quality column are skipped
+- **VEE partial-day filling:** Days with missing hours (VEE data cutoff) are filled using data from the same weekday 7 days prior. Falls back to 14, 21, etc. days prior if needed. First and last days of the dataset are excluded from filling.
+
+**Header section:** Key-value metadata (Customer Identity, EDC, dates, PLC values, etc.)
+**Interval columns:** `1`, `2`, `3`, ... `24` (with `1 QTY`, `2 QTY`, etc. interleaved)
+
+### 7. ESG Multi-Meter Format
+**Detection:** ESG format (IDR Quantity sheet or CSV with Interval Ending columns) with a `Meter Number` column containing more than one unique meter
+**Structure:** Same as standard ESG but with multiple meter rows per date
+**Special handling:**
+- Sums usage values across all meters for same date/interval (using `groupby().sum()`)
+- Otherwise identical processing to standard ESG (KH filtering, DS column exclusion, hourly timestamp adjustment)
+- Detected before standard ESG to ensure multi-meter files get summing behavior instead of first-non-null
+
 ---
 
 ## Data Processing Pipeline
 
 ### Step 1: Format Detection
 ```
-Input File → Check First Energy → Check COMED → Check ESG → Check BGE → Default PSEG
+Input File → Check First Energy → Check DUQ → Check COMED → Check ESG Multi-Meter → Check ESG → Check BGE → Default PSEG
 ```
 
 Each detection function reads a small portion of the file and looks for characteristic markers.
@@ -366,6 +390,10 @@ if user_input.startswith("& "):
 - [ ] First Energy file with 2359 column (last interval of day)
 - [ ] COMED CSV file (multiple meters)
 - [ ] COMED Excel file
+- [ ] DUQ CSV file (hourly data)
+- [ ] DUQ CSV file with VEE partial days
+- [ ] ESG Multi-Meter Excel file (multiple meters summed)
+- [ ] ESG Multi-Meter CSV file (multiple meters summed)
 
 ### Interval Testing
 - [ ] 15-minute interval data
@@ -387,7 +415,11 @@ if user_input.startswith("& "):
 
 ## Version History
 
-### v1.0.1 (Current)
+### v1.1.0 (Current)
+- **DUQ (Duquesne Light) format support:** New format for Duquesne Light hourly usage files with Customer Identity header, 24 hourly interval columns, and automatic VEE partial-day gap filling from same weekday prior week
+- **ESG Multi-Meter format support:** New sub-type for ESG files containing multiple meters; sums usage across all meters instead of taking first non-null value for duplicate dates
+
+### v1.0.1
 - **First Energy 2359 fix:** Last interval column (2359) now correctly treated as midnight instead of being skipped
 - **ESG multi-section CSV support:** Properly handles ESG CSV files with multiple sections (Document Info, Transaction Info, Organizations Info, etc.)
 - **ESG Measurement Unit filtering:** Filters for 'KH' (kWh) data when multiple data sets exist (K1, K3, KH, etc.)
@@ -395,7 +427,7 @@ if user_input.startswith("& "):
 
 ### v1.0
 - Initial release
-- Support for 6 utility formats: PSEG, ESG, BGE 15-min, BGE Hourly, First Energy, COMED
+- Support for utility formats: PSEG, ESG, BGE 15-min, BGE Hourly, First Energy, COMED
 - CSV and Excel input support
 - Automatic interval detection (15/30/60 min)
 - DST handling (March gap fill, November ignore)
@@ -417,5 +449,5 @@ if user_input.startswith("& "):
 
 ---
 
-*IDR Formatter v1.0.1 - Technical Documentation*  
+*IDR Formatter v1.1.0 - Technical Documentation*
 *AP Gas & Electric Texas*

@@ -32,21 +32,21 @@ The IDR Formatter is a tool that converts energy usage data files into a standar
                     │   DETECT FORMAT     │             └─────────────┘
                     └──────────┬──────────┘
                                │
-         ┌───────────┬─────────┼─────────┬───────────┐
-         │           │         │         │           │
-         ▼           ▼         ▼         ▼           ▼
-    ┌─────────┐ ┌─────────┐ ┌─────┐ ┌─────────┐ ┌─────────┐
-    │  First  │ │  COMED  │ │ ESG │ │   BGE   │ │  PSEG   │
-    │ Energy  │ │         │ │     │ │         │ │         │
-    └────┬────┘ └────┬────┘ └──┬──┘ └────┬────┘ └────┬────┘
-         │           │         │         │           │
-         │           ▼         │         │           │
-         │    ┌─────────────┐  │         │           │
-         │    │ Combine     │  │         │           │
-         │    │ multiple    │  │         │           │
-         │    │ meters      │  │         │           │
-         │    └──────┬──────┘  │         │           │
-         │           │         │         │           │
+         ┌──────┬──────┬─────┼─────┬──────┬──────┐
+         │      │      │     │     │      │      │
+         ▼      ▼      ▼     ▼     ▼      ▼      ▼
+    ┌───────┐┌─────┐┌─────┐┌───┐┌─────┐┌─────┐┌─────┐
+    │ First ││COMED││ DUQ ││ESG││ ESG ││ BGE ││PSEG │
+    │Energy ││     ││     ││MM ││     ││     ││     │
+    └───┬───┘└──┬──┘└──┬──┘└─┬─┘└──┬──┘└──┬──┘└──┬──┘
+        │       │      │     │     │      │      │
+        │       ▼      │     ▼     │      │      │
+        │ ┌──────────┐ │┌────────┐ │      │      │
+        │ │ Combine  │ ││Combine │ │      │      │
+        │ │ multiple │ ││multiple│ │      │      │
+        │ │ meters   │ ││meters  │ │      │      │
+        │ └────┬─────┘ │└───┬────┘ │      │      │
+        │      │       │    │      │      │      │
          ▼           └─────────┴─────────┴───────────┘
     ┌─────────────┐                    │
     │ Multiple    │                    │
@@ -168,9 +168,11 @@ The formatter automatically detects and processes files from these sources:
 |---------|------------------|
 | **PSEG** | Simple 2-column files with date/time and usage |
 | **ESG** | Files with "IDR Quantity" sheet or "Interval Ending" columns |
+| **ESG Multi-Meter** | ESG files with multiple meters (auto-summed together) |
 | **BGE** | Files with columns like "RdgDate" or "ReadDate" and "Kwh" |
 | **First Energy** | Files with "Customer Identifier" sections (can have multiple customers) |
 | **COMED** | Files with "INTERVAL USAGE DATA" header and multiple meters |
+| **DUQ** | Duquesne Light files with "Customer Identity" header and hourly interval data |
 
 ---
 
@@ -229,6 +231,10 @@ The formatter automatically handles Daylight Saving Time:
 
 This ensures your data always has consistent 24-hour days.
 
+### DUQ Partial Day Filling
+
+DUQ (Duquesne Light) files sometimes have days where data stops mid-day due to VEE data issues. The formatter automatically detects these partial days and fills the missing hours using data from the same day of the week, one week prior. This keeps every day at a uniform 24 hours.
+
 ---
 
 ## Troubleshooting
@@ -281,4 +287,4 @@ For additional assistance, contact your system administrator or the tool develop
 
 ---
 
-*IDR Formatter v1.0 - AP Gas & Electric*
+*IDR Formatter v1.1.0 - AP Gas & Electric*

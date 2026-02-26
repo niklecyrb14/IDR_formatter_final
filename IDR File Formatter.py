@@ -185,6 +185,177 @@ def read_comed_format(input_file):
     
     return result_df
 
+def is_duq_format(input_file):
+    """Check if this is a DUQ (Duquesne Light) format file with Customer Identity header and Detailed Interval Usage"""
+    file_ext = os.path.splitext(input_file)[1].lower()
+
+    try:
+        if file_ext == '.csv':
+            with open(input_file, 'r') as f:
+                first_lines = f.read(3000)
+            return 'Customer Identity' in first_lines and 'Detailed Interval Usage' in first_lines
+        elif file_ext in ['.xlsx', '.xls']:
+            df = pd.read_excel(input_file, header=None, nrows=40)
+            content = ' '.join(str(v) for v in df.values.flatten())
+            return 'Customer Identity' in content and 'Detailed Interval Usage' in content
+        return False
+    except:
+        return False
+
+def read_duq_format(input_file):
+    """
+    Read DUQ (Duquesne Light) format files and convert to standard datetime/usage format.
+
+    This format has:
+    - Header section with metadata (Customer Identity, EDC=Duquesne Light Co., etc.)
+    - Summarized Monthly Billed Usage section (skipped)
+    - Detailed Interval Usage section with hourly data:
+      - Reading Date column + columns 1-24 (hours) interleaved with QTY columns + Quality column
+      - Column 1 = hour ending 1:00 (00:00), Column 24 = hour ending 24:00 (23:00)
+      - Data is already hourly kWh
+    """
+    oprint("  Detected DUQ (Duquesne Light) format")
+
+    file_ext = os.path.splitext(input_file)[1].lower()
+
+    # Find the "Detailed Interval Usage" header row
+    if file_ext == '.csv':
+        with open(input_file, 'r') as f:
+            lines = f.readlines()
+
+        detail_row = None
+        for i, line in enumerate(lines):
+            if 'Detailed Interval Usage' in line:
+                detail_row = i
+                break
+
+        if detail_row is None:
+            raise ValueError("Could not find 'Detailed Interval Usage' section in DUQ file")
+
+        # The header row (Reading Date, 1, 1 QTY, 2, ...) is the next row
+        header_row = detail_row + 1
+        df = pd.read_csv(input_file, skiprows=header_row, header=0)
+    else:
+        df_raw = pd.read_excel(input_file, header=None)
+        detail_row = None
+        for i, row in df_raw.iterrows():
+            if any('Detailed Interval Usage' in str(v) for v in row.values):
+                detail_row = i
+                break
+
+        if detail_row is None:
+            raise ValueError("Could not find 'Detailed Interval Usage' section in DUQ file")
+
+        header_row = detail_row + 1
+        df = pd.read_excel(input_file, header=header_row)
+
+    # Identify the usage columns (numeric column names 1-24, skip QTY and Quality columns)
+    usage_cols = []
+    for col in df.columns:
+        col_str = str(col).strip()
+        if col_str.isdigit() and 1 <= int(col_str) <= 24:
+            usage_cols.append(col)
+
+    oprint(f"  Found {len(usage_cols)} hourly interval columns")
+
+    # Build datetime/usage pairs
+    all_rows = []
+    for _, row in df.iterrows():
+        date_str = str(row.iloc[0]).strip()
+        if not date_str or date_str == 'nan':
+            continue
+
+        try:
+            date = pd.to_datetime(date_str)
+        except:
+            continue
+
+        for col in usage_cols:
+            hour_num = int(str(col).strip())  # 1-24
+            hour_label = hour_num - 1  # Column 1 → 00:00, Column 24 → 23:00
+
+            dt = date + timedelta(hours=hour_label)
+
+            val = row[col]
+            if pd.notna(val):
+                try:
+                    usage = float(val)
+                    all_rows.append({'datetime': dt, 'usage': usage})
+                except (ValueError, TypeError):
+                    continue
+
+    result_df = pd.DataFrame(all_rows)
+
+    if result_df.empty:
+        raise ValueError("No valid interval data found in DUQ file")
+
+    result_df['datetime'] = pd.to_datetime(result_df['datetime'])
+    result_df = result_df.sort_values('datetime').reset_index(drop=True)
+    oprint(f"  Read {len(result_df)} hourly records")
+
+    # Fill partial days (VEE cutoff) using data from 7 days prior (same weekday)
+    # Skip the first and last days of the dataset as those are natural boundaries, not VEE issues
+    existing_dts = set(result_df['datetime'])
+    result_df['date'] = result_df['datetime'].dt.date
+    hours_per_day = result_df.groupby('date').size()
+
+    first_date = hours_per_day.index.min()
+    last_date = hours_per_day.index.max()
+    partial_days = hours_per_day[(hours_per_day < 24) & (hours_per_day.index != first_date) & (hours_per_day.index != last_date)]
+
+    if len(partial_days) > 0:
+        oprint(f"  Found {len(partial_days)} partial day(s) (VEE cutoff) - filling from same weekday prior week")
+        fill_rows = []
+
+        for day, hour_count in partial_days.items():
+            day_dt = pd.Timestamp(day)
+            missing_hours = []
+            for h in range(24):
+                dt = day_dt + timedelta(hours=h)
+                if dt not in existing_dts:
+                    missing_hours.append(h)
+
+            if not missing_hours:
+                continue
+
+            # Look for donor day: 7 days prior, then 14, 21, etc.
+            donor_day = None
+            for weeks_back in range(1, 8):
+                candidate = day_dt - timedelta(days=7 * weeks_back)
+                candidate_date = candidate.date()
+                if candidate_date in hours_per_day.index and hours_per_day[candidate_date] == 24:
+                    donor_day = candidate
+                    break
+
+            if donor_day is None:
+                oprint(f"    {day}: missing hours {missing_hours} - no donor day found, skipping")
+                continue
+
+            # Pull values from the donor day for missing hours
+            donor_data = result_df[result_df['date'] == donor_day.date()].set_index(
+                result_df[result_df['date'] == donor_day.date()]['datetime'].dt.hour
+            )
+
+            filled_count = 0
+            for h in missing_hours:
+                if h in donor_data.index:
+                    donor_usage = donor_data.loc[h, 'usage']
+                    fill_dt = day_dt + timedelta(hours=h)
+                    fill_rows.append({'datetime': fill_dt, 'usage': float(donor_usage)})
+                    filled_count += 1
+
+            oprint(f"    {day}: filled {filled_count} missing hour(s) from {donor_day.date()}")
+
+        if fill_rows:
+            fill_df = pd.DataFrame(fill_rows)
+            fill_df['datetime'] = pd.to_datetime(fill_df['datetime'])
+            result_df = pd.concat([result_df, fill_df], ignore_index=True)
+            result_df = result_df.sort_values('datetime').reset_index(drop=True)
+            oprint(f"  Total after filling: {len(result_df)} hourly records")
+
+    result_df = result_df.drop(columns=['date'], errors='ignore')
+    return result_df
+
 def is_first_energy_format(input_file):
     """Check if this is a First Energy format file (with Customer Identifier and Detailed Interval Usage)"""
     file_ext = os.path.splitext(input_file)[1].lower()
@@ -402,6 +573,148 @@ def read_first_energy_format(input_file):
                 oprint(f"      Converted to {len(result_df)} interval records")
     
     return customer_data
+
+def is_esg_multi_meter_format(input_file):
+    """Check if this is an ESG format file with multiple meters that need to be summed."""
+    file_ext = os.path.splitext(input_file)[1].lower()
+
+    try:
+        if file_ext in ['.xlsx', '.xls']:
+            xlsx = pd.ExcelFile(input_file)
+            if 'IDR Quantity' not in xlsx.sheet_names:
+                return False
+            df = pd.read_excel(xlsx, sheet_name='IDR Quantity', header=5, usecols=[3])
+            if 'Meter Number' not in df.columns:
+                return False
+            unique_meters = df['Meter Number'].dropna().unique()
+            return len(unique_meters) > 1
+        elif file_ext == '.csv':
+            with open(input_file, 'r', encoding='utf-8', errors='replace') as f:
+                for i, line in enumerate(f):
+                    if i > 100:
+                        break
+                    if 'Report Period Date' in line and 'Interval Ending' in line and 'Meter Number' in line:
+                        # Found header with Meter Number - read just that column to check for multiple meters
+                        import csv
+                        df = pd.read_csv(input_file, skiprows=i, usecols=['Meter Number'])
+                        unique_meters = df['Meter Number'].dropna().unique()
+                        return len(unique_meters) > 1
+            return False
+        return False
+    except:
+        return False
+
+def read_esg_multi_meter_format(input_file):
+    """
+    Read ESG format files with multiple meters and sum their usage values.
+
+    Same structure as standard ESG but with a Meter Number column containing
+    multiple meters. Values for the same date/interval across meters are summed.
+    """
+    oprint("  Detected ESG multi-meter format")
+
+    file_ext = os.path.splitext(input_file)[1].lower()
+
+    # Read the file
+    if file_ext in ['.xlsx', '.xls']:
+        df = pd.read_excel(input_file, sheet_name='IDR Quantity', header=5)
+    else:
+        import csv
+        header_row = None
+        with open(input_file, 'r', encoding='utf-8', errors='replace') as f:
+            reader = csv.reader(f)
+            for i, row in enumerate(reader):
+                row_str = ','.join(row)
+                if 'Report Period Date' in row_str and 'Interval Ending' in row_str:
+                    header_row = i
+                    break
+        if header_row is not None:
+            df = pd.read_csv(input_file, skiprows=header_row, on_bad_lines='skip')
+        else:
+            df = pd.read_csv(input_file, on_bad_lines='skip')
+
+    # Filter for KH Measurement Unit if the column exists
+    if 'Measurement Unit' in df.columns:
+        kh_count = (df['Measurement Unit'] == 'KH').sum()
+        total_count = len(df)
+        if kh_count > 0 and kh_count < total_count:
+            oprint(f"  Filtering for 'KH' Measurement Unit ({kh_count} of {total_count} rows)")
+            df = df[df['Measurement Unit'] == 'KH']
+
+    # Report meters found
+    if 'Meter Number' in df.columns:
+        meters = df['Meter Number'].dropna().unique()
+        oprint(f"  Found {len(meters)} meter(s) to combine: {', '.join(str(m) for m in meters)}")
+
+    # Get interval columns (excluding DS columns)
+    interval_cols = [col for col in df.columns if str(col).startswith('Interval Ending') and 'DS' not in str(col)]
+    ds_cols = [col for col in df.columns if str(col).startswith('Interval Ending') and 'DS' in str(col)]
+
+    oprint(f"  Found {len(interval_cols)} regular interval columns")
+    oprint(f"  Found {len(ds_cols)} DST fall-back columns (ignoring to keep days uniform)")
+
+    # Sum across meters for each date/interval by grouping by Report Period Date
+    # This handles both multi-meter summing and duplicate date combining
+    numeric_cols = interval_cols + ds_cols
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    df_summed = df.groupby('Report Period Date')[numeric_cols].sum().reset_index()
+    oprint(f"  Summed {len(df)} rows across meters to {len(df_summed)} unique dates")
+
+    # Convert to long format (datetime, usage)
+    records = []
+
+    for _, row in df_summed.iterrows():
+        date_val = row['Report Period Date']
+        if pd.isna(date_val):
+            continue
+
+        try:
+            date_int = int(float(date_val))
+            date_str = str(date_int)
+            if len(date_str) != 8:
+                continue
+            base_date = pd.to_datetime(date_str, format='%Y%m%d')
+        except (ValueError, TypeError):
+            continue
+
+        # Process regular interval columns only (ignore DS columns)
+        for col in interval_cols:
+            time_match = re.search(r'(\d{4})$', col)
+            if time_match:
+                time_str = time_match.group(1)
+                hour = int(time_str[:2])
+                minute = int(time_str[2:])
+
+                if hour == 24:
+                    interval_dt = base_date + timedelta(days=1)
+                else:
+                    interval_dt = base_date + timedelta(hours=hour, minutes=minute)
+
+                value = row[col]
+                if pd.notna(value) and value != 0:
+                    try:
+                        records.append({'datetime': interval_dt, 'usage': float(value)})
+                    except (ValueError, TypeError):
+                        continue
+
+    result_df = pd.DataFrame(records)
+
+    # Group by datetime and sum (in case of any remaining overlaps)
+    result_df = result_df.groupby('datetime')['usage'].sum().reset_index()
+    result_df = result_df.sort_values('datetime').reset_index(drop=True)
+
+    # Detect if hourly data - shift timestamps to start-of-hour
+    if len(result_df) >= 2:
+        time_diff = (result_df['datetime'].iloc[1] - result_df['datetime'].iloc[0]).total_seconds() / 60
+        if time_diff == 60:
+            oprint(f"  Adjusting hourly ESG timestamps to start-of-hour format")
+            result_df['datetime'] = result_df['datetime'] - timedelta(hours=1)
+
+    oprint(f"  Converted to {len(result_df)} interval records")
+
+    return result_df
 
 def is_esg_format(input_file):
     """Check if this is an ESG format file (Excel with IDR Quantity sheet, or CSV with same columns)"""
@@ -967,9 +1280,15 @@ def format_interval_data(input_file):
             oprint(f"\n  ✓ Saved to: {output_file}")
             return output_file
         
+        # Check if this is DUQ (Duquesne Light) format
+        if is_duq_format(input_file):
+            df = read_duq_format(input_file)
         # Check if this is COMED format (with INTERVAL USAGE DATA and KW_INTERVAL columns)
-        if is_comed_format(input_file):
+        elif is_comed_format(input_file):
             df = read_comed_format(input_file)
+        # Check if this is ESG multi-meter format (multiple meters to sum)
+        elif is_esg_multi_meter_format(input_file):
+            df = read_esg_multi_meter_format(input_file)
         # Check if this is ESG format (Excel with IDR Quantity sheet, or CSV with same columns)
         elif is_esg_format(input_file):
             df = read_esg_format(input_file)
@@ -1055,7 +1374,7 @@ print("""
 ============================================================
 """)
 print("Formats 15-min, 30-min, or hourly interval data to hourly.")
-print("Supports: PSEG, ESG, BGE, First Energy, COMED formats")
+print("Supports: PSEG, ESG, ESG Multi-Meter, BGE, First Energy, COMED, DUQ formats")
 print("File types: CSV and Excel (.csv, .xlsx, .xls)")
 
 # Check if a file was dragged onto the exe (passed as argument)
